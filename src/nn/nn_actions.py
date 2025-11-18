@@ -14,6 +14,7 @@ from src.nn.gradient_based_weighting import PINNWeighting
 import numpy as np
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
+import time, csv
 
 
 class NeuralNetworkActions():
@@ -68,15 +69,28 @@ class NeuralNetworkActions():
 
      
     """
-    def __init__(self, cfg, modelling_full): # The modelling equations are used, must be predefined, more choices to be added such as dynamic modelling
+    def __init__(self, cfg, modelling_full, data_loader=None, dataset_path=None, load_data=True): # The modelling equations are used, must be predefined, more choices to be added such as dynamic modelling
         self.cfg = cfg
         set_random_seeds(cfg.seed) # set all seeds
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  
 
         self.modelling_full = modelling_full
-        self.data_loader = DataSampler(cfg)
-        self.input_dim = self.data_loader.input_dim # The input dimension is the number of input features
-        self.output_dim = self.input_dim-1 # The output dimension is the input dimension minus the time column
+        # --- Handle data loading logic ---
+        if data_loader is not None:
+            # Use externally provided data loader
+            self.data_loader = data_loader
+            self.input_dim = data_loader.input_dim
+            self.output_dim = data_loader.input_dim - 1
+        elif load_data:
+            # Default: load internally from cfg
+            self.data_loader = DataSampler(cfg, dataset_path=dataset_path)
+            self.input_dim = self.data_loader.input_dim
+            self.output_dim = self.input_dim - 1
+        else:
+            # If no data is provided or loaded
+            self.data_loader = None
+            self.input_dim = None
+            self.output_dim = None
 
         self.model = self.define_nn_model() # Create an instance of the class Net
         self.weight_init(self.model, cfg.nn.weight_init) # Initialize the weights of the Net
@@ -90,6 +104,17 @@ class NeuralNetworkActions():
         
         self.model = self.model.to(self.device)
         self.early_stopping = EarlyStopping(patience=cfg.nn.early_stopping_patience, verbose=True, delta=cfg.nn.early_stopping_min_delta)
+        # dict per epoch
+        self.history = {
+            "loss_data": [],
+            "loss_dt": [],
+            "loss_pinn": [],
+            "loss_pinn_ic": [],
+            "weighted_total": [],
+            "grad_norms": [],       
+            "weights": [],
+            "grad_like": []
+        }
         
 
 
@@ -684,6 +709,18 @@ class NeuralNetworkActions():
             num_epochs (int): number of epochs
         """
         x_train, y_train, x_train_col, x_train_col_ic, y_train_col_ic, x_val, y_val = self.data_loader.define_train_val_data2(self.cfg.dataset.perc_of_data_points, self.cfg.dataset.perc_of_col_points, num_of_skip_data_points, num_of_skip_col_points, num_of_skip_val_points) # define the training and validation data
+        
+        # --- Ensure all tensors are on the correct device ---
+        to_dev = lambda t, req=False: t.to(self.device, dtype=torch.float32).requires_grad_(req) if isinstance(t, torch.Tensor) else t
+
+        x_train        = to_dev(x_train, True)
+        y_train        = to_dev(y_train)
+        x_train_col    = to_dev(x_train_col, True)
+        x_train_col_ic = to_dev(x_train_col_ic, True)
+        y_train_col_ic = to_dev(y_train_col_ic)
+        x_val          = to_dev(x_val, True)
+        y_val          = to_dev(y_val)
+        
         # Create DataLoaders for batch processing
         batch_size = self.cfg.nn.batch_size if self.cfg.nn.batch_size != "None" else max(len(x_train), len(x_train_col), len(x_train_col_ic))
         train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size)
@@ -704,6 +741,24 @@ class NeuralNetworkActions():
         #total_iteration_count = 0
         # Variable to store the last update iteration
         #last_update_iteration = 0
+
+        # add csv logging
+        start_time = time.time()
+        log_path = os.path.join(
+            self.cfg.dirs.model_dir,
+            folder_name,
+            f"training_log_{self.cfg.nn.weighting.update_weight_method}.csv"
+        )
+        with open(log_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "epoch",
+                "train_total", "train_data", "train_dt", "train_pinn", "train_pinn_ic",
+                "d_data", "d_dt_norm", "d_pinn_norm", "d_ic",
+                "val_total", "val_data", "val_dt",
+                "weight_data", "weight_dt", "weight_pinn", "weight_pinn_ic",
+                "elapsed_s"
+            ])
 
         print("getting in training")
         for epoch in range(self.cfg.nn.num_epochs):
@@ -765,12 +820,59 @@ class NeuralNetworkActions():
                     self.loss_dt = mean_loss_dt
                     self.loss_pinn = mean_loss_pinn
                     self.loss_pinn_ic = loss_pinn_ic
+                    # add last loss terms for later access
+                    self._loss_data_last = loss_data.detach()
+                    self._loss_dt_last = [l.detach() for l in loss_dt]
+                    self._loss_pinn_last = [l.detach() for l in loss_pinn]
+                    self._loss_pinn_ic_last = loss_pinn_ic.detach()
                     self.weighting_scheme.log_losses([loss_total, loss_data, mean_loss_dt, mean_loss_pinn, loss_pinn_ic], epoch, ["total_loss","data", "dt", "pinn", "pinn_ic"])
                     self.optimizer.zero_grad()
                     loss_total.backward()
                     return loss_total
                 
                 self.optimizer.step(closure)
+
+
+            def _ensure_tensor(x):
+                """Convert lists of tensors → stacked tensor; tensors → detached tensor."""
+                if isinstance(x, list):
+                    return torch.stack([t.detach() for t in x])
+                elif torch.is_tensor(x):
+                    return x.detach()
+                else:
+                    raise ValueError("Unexpected loss type")
+
+            # Normalize all forms to tensors
+            ld  = _ensure_tensor(self._loss_data_last)       # shape: scalar
+            ldt = _ensure_tensor(self._loss_dt_last)         # shape: (#states,)
+            lp  = _ensure_tensor(self._loss_pinn_last)       # shape: (#states,)
+            lic = _ensure_tensor(self._loss_pinn_ic_last)    # shape: scalar
+
+            # History update
+            self.history["loss_data"].append(ld.cpu())
+            self.history["loss_dt"].append(ldt.cpu())
+            self.history["loss_pinn"].append(lp.cpu())
+            self.history["loss_pinn_ic"].append(lic.cpu())
+
+            # Gradient-like finite difference estimate
+            if len(self.history["loss_data"]) > 1:
+                d_data = ld - self.history["loss_data"][-2]
+                d_dt   = ldt - self.history["loss_dt"][-2]
+                d_pinn = lp - self.history["loss_pinn"][-2]
+                d_ic   = lic - self.history["loss_pinn_ic"][-2]
+            else:
+                # First epoch → no previous values
+                d_data = torch.tensor(0.0)
+                d_dt   = torch.zeros_like(ldt)
+                d_pinn = torch.zeros_like(lp)
+                d_ic   = torch.tensor(0.0)
+
+            self.history["grad_like"].append({
+                "data": d_data.cpu(),
+                "dt": d_dt.cpu(),
+                "pinn": d_pinn.cpu(),
+                "ic": d_ic.cpu()
+            })
 
             """
             if self.optimizer != "LBFGS":
@@ -789,7 +891,42 @@ class NeuralNetworkActions():
                 
             val_loss = loss_val_data.item() 
             val_dt_loss = mean_loss_val_physics.item() 
-            
+            val_total = val_loss + val_dt_loss
+
+            # access weights
+            try:
+                weights_np = self.weighting_scheme.weights.detach().cpu().numpy()
+                w_data, w_dt, w_pinn, w_ic = weights_np.tolist()
+            except Exception:
+                # fallback if weights isn't a tensor (shouldn't happen, but just in case)
+                w_data = w_dt = w_pinn = w_ic = 0.0
+
+            # time epoch
+            elapsed_time = time.time() - start_time
+            # write to csv
+            with open(log_path, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    epoch + 1,
+                    self.loss_total.item(),
+                    self.loss_data.item(),
+                    self.loss_dt.item(),
+                    self.loss_pinn.item(),
+                    self.loss_pinn_ic.item(),
+                    float(d_data.item()),
+                    float(d_dt.norm().item()),
+                    float(d_pinn.norm().item()),
+                    float(d_ic.item()),
+                    val_total,
+                    val_loss,
+                    val_dt_loss,
+                    float(w_data),
+                    float(w_dt),
+                    float(w_pinn),
+                    float(w_ic),
+                    elapsed_time,
+                ])
+
 
             #if total_iteration_count - last_update_iteration > self.cfg.nn.weighting.update_weights_freq:
                 # update the weights of the loss functions
@@ -969,7 +1106,8 @@ class NeuralNetworkActions():
                     run.log({f"RMSE for variable {self.keys[i]}": rmse[j,i], "Time": time[j]})
 
         max_mae = torch.max(mae2)  # Find the maximum absolute error
-        run.log({"Test Max AE": max_mae.item()})
+        if run is not None:
+            run.log({"Test Max AE": max_mae.item()})
         #save the mae and rmse
         full_path = os.path.join(self.cfg.dirs.model_dir, self.final_name)
         np.save(full_path+"_mae.npy", mae)
