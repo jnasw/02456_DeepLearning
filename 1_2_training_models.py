@@ -89,7 +89,7 @@ def train_single_pinn_lbfgs(
 
     # Logging setup
     t0 = time.time()
-    log_csv = os.path.join(out_dir, f"trainlog_{dataset_name}_LBFGS_e{epochs}.csv")
+    log_csv = os.path.join(out_dir, f"1_trainlog_{dataset_name}_e{epochs}.csv")
     with open(log_csv, "w", newline="") as f:
         csv.writer(f).writerow([
             "epoch", "train_loss", "val_data", "val_dt", "val_pinn", "val_pinn_ic",
