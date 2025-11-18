@@ -198,6 +198,168 @@ class ODE_modelling():
         for k in range(len(set_of_values)):
             init_condition_table = self.append_element_set(init_condition_table, set_of_values[k], iterations[k])
         return init_condition_table
+    
+
+    def create_init_conditions_set4(self, total_samples=1000):
+        """
+        Create initial conditions by sampling each variable independently within its range.
+        Instead of combinatorial sampling, generates a fixed number of samples where each
+        variable is sampled independently from its specified range.
+ 
+        Args:
+            total_samples (int): Total number of initial condition samples to generate.
+ 
+        Returns:
+            list: A matrix with initial conditions where each row is one sample.
+        """
+        if self.torch:# if using torch then use the nn_init_cond.yaml file to create collocation points init conditions
+            init_conditions_path = os.path.join(self.init_conditions_dir, self.model_flag,"nn_init_cond"+str(self.init_condition_bounds)+".yaml")
+        else: # 
+            init_conditions_path = os.path.join(self.init_conditions_dir, self.model_flag,"init_cond"+str(self.init_condition_bounds)+".yaml")
+        init_conditions = OmegaConf.load(init_conditions_path)
+        self.check_ic_yaml(init_conditions)
+ 
+        # Extract ranges and variables from init_conditions
+        ranges = []
+        variables = []
+        for condition in init_conditions:
+            ranges.append(condition['range'])
+            variables.append(condition['name'])
+ 
+        num_variables = len(ranges)
+        print(f"Creating {total_samples} initial condition samples")
+        print(f"Variables: {variables}")
+        print(f"Ranges: {ranges}")
+ 
+        # Set random seed for reproducibility if specified
+        if self.seed is not None:
+            np.random.seed(self.seed)
+ 
+        # Generate samples based on sampling method
+        if self.sampling == "Random":
+            # Generate random samples for all variables at once
+            samples = np.random.uniform(0, 1, (total_samples, num_variables))
+        elif self.sampling == "Linear":
+            # For linear sampling with multiple variables, we can use a grid approach
+            # but sample points along the diagonal or use sobol sequences
+            if num_variables == 1:
+                samples = np.linspace(0, 1, total_samples).reshape(-1, 1)
+            else:
+                # Use a simple approach: sample each variable linearly but offset
+                samples = np.zeros((total_samples, num_variables))
+                for i in range(num_variables):
+                    offset = i / num_variables
+                    linear_samples = (np.linspace(0, 1, total_samples) + offset) % 1.0
+                    samples[:, i] = linear_samples
+        elif self.sampling == "Lhs":
+            # Latin Hypercube Sampling - ideal for this type of sampling
+            samples = lhs(n=num_variables, samples=total_samples)
+        else:
+            raise Exception(f"Sampling method {self.sampling} not implemented")
+ 
+        # Convert normalized samples to actual values within ranges
+        init_condition_table = []
+        for sample in samples:
+            condition = []
+            for i, (norm_val, value_range) in enumerate(zip(sample, ranges)):
+                if len(value_range) == 1:
+                    # Single value range
+                    actual_val = value_range[0]
+                else:
+                    # Map from [0,1] to [min, max]
+                    actual_val = value_range[0] + norm_val * (value_range[1] - value_range[0])
+                condition.append(actual_val)
+            init_condition_table.append(condition)
+ 
+        print(f"Generated {len(init_condition_table)} initial condition samples using {self.sampling} sampling")
+        return init_condition_table
+    
+    def create_init_conditions_set5(
+        self,
+        previous_ICs,
+        previous_errors,
+        total_samples=1000,
+        exploration_ratio=0.2,
+        mutation_std=0.0,
+        range_scale=1.0,
+    ):
+        """
+        Generate initial conditions using an evolutionary (Evo) sampling strategy.
+
+        The Evo approach combines **exploitation** (reusing or perturbing high-error
+        initial conditions from a previous dataset) and **exploration** (sampling new,
+        unseen initial conditions within the physical variable ranges).
+
+        It builds upon the Random/LHS dataset (Set 4) and uses the ODE residuals
+        or other error metrics from that dataset to guide the selection of new ICs.
+        """
+
+        # --- Load ranges ---
+        init_conditions_path = os.path.join(
+            self.init_conditions_dir, self.model_flag,
+            ("nn_init_cond" if self.torch else "init_cond") + str(self.init_condition_bounds) + ".yaml"
+        )
+        init_conditions = OmegaConf.load(init_conditions_path)
+        self.check_ic_yaml(init_conditions)
+
+        # Apply range scaling
+        ranges = []
+        for cond in init_conditions:
+            r = cond["range"]
+            if len(r) > 1:
+                center = np.mean(r)
+                half_width = (r[1] - r[0]) / 2 * range_scale
+                scaled_range = [center - half_width, center + half_width]
+                ranges.append(scaled_range)
+            else:
+                ranges.append(r)
+        num_variables = len(ranges)
+
+        # --- Determine exploitation and exploration sizes ---
+        n_exploit = int((1 - exploration_ratio) * total_samples)
+        n_explore = int(total_samples - n_exploit)  # ensure integer
+
+        previous_ICs = np.array(previous_ICs)
+        previous_errors = np.array(previous_errors)
+
+        # --- Select top high-error ICs for exploitation ---
+        top_k_idx = np.argsort(previous_errors)[-n_exploit:]
+        exploit_ics = previous_ICs[top_k_idx]
+
+        # --- Generate exploratory ICs (LHS or random) ---
+        if self.seed is not None:
+            np.random.seed(self.seed)
+
+         # Add Gaussian mutation to exploit ICs if specified
+        if mutation_std > 0:
+            exploit_ics = exploit_ics + np.random.normal(0, mutation_std, exploit_ics.shape)
+
+        if n_explore > 0:  # only sample if exploration part > 0
+            if self.sampling == "Lhs":
+                samples = lhs(n=num_variables, samples=n_explore)
+            else:
+                samples = np.random.uniform(0, 1, size=(n_explore, num_variables))
+        else:
+            samples = np.empty((0, num_variables))  # no exploration part
+
+        explore_ics = []
+        for sample in samples:
+            condition = []
+            for norm_val, value_range in zip(sample, ranges):
+                if len(value_range) == 1:
+                    actual_val = value_range[0]
+                else:
+                    actual_val = value_range[0] + norm_val * (value_range[1] - value_range[0])
+                condition.append(actual_val)
+            explore_ics.append(condition)
+
+        init_condition_table = list(exploit_ics) + explore_ics
+        print(f"[Evo Sampling] {len(init_condition_table)} ICs ({n_exploit} exploit, {n_explore} explore) | "
+            f"range_scale={range_scale}, mutation_std={mutation_std}")
+
+        self.exploit_ics = exploit_ics
+        self.explore_ics = explore_ics
+        return init_condition_table
 
     def solve(self, x0, method, modelling_full):
         """
@@ -251,7 +413,7 @@ class ODE_modelling():
             print(f"Time taken to solve the model for {len(init_conditions)} initial conditions: {end_time - start_time} seconds.")
         return solution_all
     
-    def save_dataset(self, solution):
+    def save_dataset(self, solution, label=None):
         """
         Create and save dataset for the model.
 
@@ -272,13 +434,24 @@ class ODE_modelling():
         if not os.path.exists(os.path.join(self.dataset_dir, self.model_flag)):
             os.makedirs(os.path.join(self.dataset_dir, self.model_flag))
 
-        # count the number of files in the directory
-        num_files = len([f for f in os.listdir(os.path.join(self.dataset_dir, self.model_flag)) if os.path.isfile(os.path.join(self.dataset_dir, self.model_flag, f))])
-        print("Number of files in the directory: ", num_files)
-        print(f'Saved dataset "{self.model_flag, "dataset_v" + str(num_files + 1)}".')
-        wandb.log({"Dataset saved": f'Saved dataset "{self.model_flag, "dataset_v" + str(num_files + 1)}".'})
-        # save the dataset as pickle in the dataset directory
-        dataset_path = os.path.join(self.dataset_dir, self.model_flag, "dataset_v" + str(num_files + 1) + ".pkl")
+        target_dir = os.path.join(self.dataset_dir, self.model_flag)
+
+        # If no label → continue numbering scheme
+        if label is None:
+            num_files = len([
+                f for f in os.listdir(target_dir)
+                if os.path.isfile(os.path.join(target_dir, f))
+            ])
+            filename = f"dataset_v{num_files + 1}.pkl"
+            print(f'Saved dataset "{self.model_flag, "dataset_v" + str(num_files + 1)}".')
+            wandb.log({"Dataset saved": f'Saved dataset "{self.model_flag, "dataset_v" + str(num_files + 1)}".'})
+            # save the dataset as pickle in the dataset directory
+            dataset_path = os.path.join(self.dataset_dir, self.model_flag, "dataset_v" + str(num_files + 1) + ".pkl")
+        else:
+            # Use label directly
+            filename = f"dataset_{label}.pkl"
+            dataset_path = os.path.join(target_dir, filename)
+        
         with open(dataset_path, 'wb') as f:
             pickle.dump(dataset, f)
 
