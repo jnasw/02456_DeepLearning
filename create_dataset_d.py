@@ -25,7 +25,7 @@ def main(config):
     modelling_full=SynchronousMachineModels(config) # Define the model to be used
     flag_for_time = True
     solution = SM_model.solve_sm_model(init_conditions, modelling_full, flag_for_time) # Solve the model for the various initial conditions
-    SM_model.save_dataset(solution) # Save the dataset
+    SM_model.save_dataset(solution, label="set3_grid") # Save the dataset
     return None
 
 if __name__ == "__main__":
