@@ -781,7 +781,7 @@ class NeuralNetworkActions():
                         dydt1, ode1 = self.calculate_point_grad2(x_col_batch, None) # calculate nn output gradient for the collocation points, and the ode solution for the nn output
                         output_col0 = self.forward_pass(x_col_ic_batch) # calculate the nn output for the collocation points with time 0
                         loss_data = self.criterion(output, y_batch) # calculate the data loss
-                        
+
                         loss_dt = [self.criterion(dydt0[:, i], ode0[:, i]) for i in range(dydt0.shape[1])]
                         mean_loss_dt = torch.mean(torch.stack(loss_dt))
                         mean_loss_pinn, loss_pinn = self.calc_adapt_criterion_loss(x_col_batch, dydt1, ode1)
@@ -874,6 +874,13 @@ class NeuralNetworkActions():
                 "ic": d_ic.cpu()
             })
 
+            self.weighting_scheme.update_smoothing(
+                L_data=ld.detach(),
+                L_dt=ldt.detach(),
+                L_pinn=lp.detach(),
+                L_ic=lic.detach(),
+            )
+
             """
             if self.optimizer != "LBFGS":
                 self.scheduler.step()
@@ -934,6 +941,11 @@ class NeuralNetworkActions():
             if (epoch + 1) % self.cfg.nn.weighting.update_weights_freq == 0:
                 if self.cfg.nn.weighting.update_weight_method=="Sam":
                     self.weighting_scheme.update_weights(self.losses, epoch)
+                elif self.cfg.nn.weighting.update_weight_method=="MA":
+                    self.weighting_scheme.update_weights_MA(epoch)
+                #elif self.cfg.nn.weighting.update_weight_method=="ID":
+                #    self.weighting_scheme.update_weights_ID(epoch, self._last_ode1)
+
             
                 # log some plots to wandb
                 if wandb_run is not None:

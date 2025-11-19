@@ -13,6 +13,12 @@ class PINNWeighting:
         self.device = device
         self.initialize_weights()
         self.epoch_flag = -1
+        self.smooth = {
+            "data": None,
+            "dt": None,
+            "pinn": None,
+            "ic": None,
+        }
 
     def initialize_weights(self):
         # check that the weights are valid and positive
@@ -75,7 +81,7 @@ class PINNWeighting:
         # Calculate total loss
         self.total_loss = torch.stack(individual_weighted_losses).sum()        
         # Update weights with the desired frequency, iteration_count is used to check if the update is needed and not epoch due to lbfgs internal iterations
-        if (epoch + 1) % self.update_weights_freq == 0 and self.scheme != 'Sam': 
+        if (epoch + 1) % self.update_weights_freq == 0 and self.scheme not in ['Sam', 'MA', 'ID']: 
             if epoch != self.epoch_flag: # To avoid multiple updates in the same epoch
                 self.update_weights(individual_weighted_losses, epoch)
                 #print("Updated Weights", self.weights.tolist())
@@ -158,7 +164,7 @@ class PINNWeighting:
         elif self.scheme == 'Static':
             return
         
-        
+
         else:
             raise ValueError("Unknown weighting scheme. Choose either 'gradient' or 'ntk' or 'sam'.")
         
@@ -191,3 +197,113 @@ class PINNWeighting:
             for i in range(len(loss)):
                 self.wandb_run.log({name[i]: loss[i], 'epoch': epoch})
         return
+    
+    def update_smoothing(self, L_data, L_dt, L_pinn, L_ic):
+        """
+        Update exponential moving averages of each loss term.
+        ALWAYS reduce per-state losses to a scalar.
+        """
+
+        #  Ensure dt and pinn become scalars 
+        if torch.is_tensor(L_dt):
+            if L_dt.ndim > 0:
+                L_dt = L_dt.mean()
+        elif isinstance(L_dt, list):
+            L_dt = torch.stack(L_dt).mean()
+
+        if torch.is_tensor(L_pinn):
+            if L_pinn.ndim > 0:
+                L_pinn = L_pinn.mean()
+        elif isinstance(L_pinn, list):
+            L_pinn = torch.stack(L_pinn).mean()
+
+        # Ensure L_data and L_ic are scalars too
+        if torch.is_tensor(L_data) and L_data.ndim > 0:
+            L_data = L_data.mean()
+
+        if torch.is_tensor(L_ic) and L_ic.ndim > 0:
+            L_ic = L_ic.mean()
+
+        #  Initialize smoothing 
+        if self.smooth["data"] is None:
+            print("Initializing smoothing")
+            self.smooth["data"] = L_data
+            self.smooth["dt"]   = L_dt
+            self.smooth["pinn"] = L_pinn
+            self.smooth["ic"]   = L_ic
+            return
+
+        #  Update EMA 
+        b = self.beta
+        self.smooth["data"] = b * self.smooth["data"] + (1 - b) * L_data
+        self.smooth["dt"]   = b * self.smooth["dt"]   + (1 - b) * L_dt
+        self.smooth["pinn"] = b * self.smooth["pinn"] + (1 - b) * L_pinn
+        self.smooth["ic"]   = b * self.smooth["ic"]   + (1 - b) * L_ic
+
+        #  Debug print 
+        print(f"[SMOOTH] data={float(self.smooth['data']):.4e}, "
+            f"dt={float(self.smooth['dt']):.4e}, "
+            f"pinn={float(self.smooth['pinn']):.4e}, "
+            f"ic={float(self.smooth['ic']):.4e}")
+    
+    def update_weights_MA(self, epoch):
+        """
+        Max-Average (MA) adaptive weighting.
+        Uses exponentially-smoothed losses stored in self.smooth.
+        Expands 4 group-level weights → full expanded weight vector.
+        Includes detailed debug prints for analysis.
+        """
+
+        # Verify smoothing is initialized
+        if (
+            self.smooth["data"] is None or
+            self.smooth["dt"]   is None or
+            self.smooth["pinn"] is None or
+            self.smooth["ic"]   is None
+        ):
+            print("MA skipped — smoothing not initialized yet.")
+            return
+
+        # Gather smoothed group losses
+        L_data = float(self.smooth["data"])
+        L_dt   = float(self.smooth["dt"])
+        L_pinn = float(self.smooth["pinn"])
+        L_ic   = float(self.smooth["ic"])
+
+        print(f"Smoothed losses → data={L_data:.4e}, dt={L_dt:.4e}, pinn={L_pinn:.4e}, ic={L_ic:.4e}")
+
+        L_vec = torch.tensor([L_data, L_dt, L_pinn, L_ic], dtype=torch.float32, device=self.device)
+        eps = 1e-8
+
+        # Compute MA weights
+        L_avg = torch.mean(L_vec)
+        print(f"Loss average (L_avg): {L_avg.item():.4e}")
+
+        w_raw = L_avg / (L_vec + eps)
+        print(f"Raw MA weights (before norm): {w_raw.tolist()}")
+
+        # Normalize so weights sum to 1 (optional but stabilizing)
+        w_norm = w_raw / torch.sum(w_raw)
+        print(f"Normalized MA weights: {w_norm.tolist()}")
+
+        # Expand MA group weights to full vector shape
+        w_data = w_norm[0]
+        w_dt   = w_norm[1]
+        w_pinn = w_norm[2]
+        w_ic   = w_norm[3]
+
+        full_weights = (
+            [w_data] +
+            [w_dt]   * self.loss_dimension +
+            [w_pinn] * self.loss_dimension +
+            [w_ic]
+        )
+
+        full_weights = torch.tensor(full_weights, dtype=torch.float32, device=self.device)
+
+        # Apply mask (freeze zero-weights)
+        full_weights = full_weights * self.weight_mask
+
+        # Assign back safely
+        with torch.no_grad():
+            self.weights = full_weights.detach()
