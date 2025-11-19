@@ -34,7 +34,7 @@ for DATASET in "${DATASETS[@]}"; do
 
   # Model 1: MA weighting
   echo "---- Training with MA weighting ----"
-  python train_hpc.py \
+  python 2_1_training_models.py \
       --dataset "${DATASET}" \
       --epochs 1000 \
       --weighting MA \
@@ -44,7 +44,7 @@ for DATASET in "${DATASETS[@]}"; do
 
   # Model 2: Static weighting
   echo "---- Training with Static weighting ----"
-  python train_hpc.py \
+  python 2_1_training_models.py \
       --dataset "${DATASET}" \
       --epochs 1000 \
       --weighting Static \
