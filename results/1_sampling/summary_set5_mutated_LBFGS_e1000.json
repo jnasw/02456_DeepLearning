@@ -1,0 +1,13 @@
+{
+  "dataset": "set5_mutated",
+  "final": {
+    "data": 1.1807841474364977e-05,
+    "dt": 0.11228258162736893,
+    "pinn": 0.03829418122768402,
+    "pinn_ic": 3.9426900912076235e-05,
+    "total": 0.150628000497818
+  },
+  "epochs": 1000,
+  "checkpoint": "pinn_set5_mutated_LBFGS_e1000.pth",
+  "log_csv": "1_trainlog_set5_mutated_e1000.csv"
+}

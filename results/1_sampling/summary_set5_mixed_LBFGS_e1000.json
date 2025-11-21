@@ -1,0 +1,13 @@
+{
+  "dataset": "set5_mixed",
+  "final": {
+    "data": 7.949205610202625e-06,
+    "dt": 0.07506616413593292,
+    "pinn": 0.0357946939766407,
+    "pinn_ic": 0.00011992188228759915,
+    "total": 0.11098873615264893
+  },
+  "epochs": 1000,
+  "checkpoint": "pinn_set5_mixed_LBFGS_e1000.pth",
+  "log_csv": "1_trainlog_set5_mixed_e1000.csv"
+}

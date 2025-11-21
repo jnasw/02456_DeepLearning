@@ -1,0 +1,13 @@
+{
+  "dataset": "set5_explore",
+  "final": {
+    "data": 6.0182373999850824e-06,
+    "dt": 0.09931274503469467,
+    "pinn": 0.037582822144031525,
+    "pinn_ic": 6.661966472165659e-05,
+    "total": 0.1369682103395462
+  },
+  "epochs": 1000,
+  "checkpoint": "pinn_set5_explore_LBFGS_e1000.pth",
+  "log_csv": "1_trainlog_set5_explore_e1000.csv"
+}

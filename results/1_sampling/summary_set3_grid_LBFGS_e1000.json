@@ -1,0 +1,13 @@
+{
+  "dataset": "set3_grid",
+  "final": {
+    "data": 9.42054066399578e-06,
+    "dt": 0.05118986964225769,
+    "pinn": 0.07431498914957047,
+    "pinn_ic": 0.0003905095800291747,
+    "total": 0.12590479850769043
+  },
+  "epochs": 1000,
+  "checkpoint": "pinn_set3_grid_LBFGS_e1000.pth",
+  "log_csv": "1_trainlog_set3_grid_e1000.csv"
+}
