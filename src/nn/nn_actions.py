@@ -731,6 +731,7 @@ class NeuralNetworkActions():
             "Number of collocation points:", x_train_col.shape[0], 
             "Number of collocation points (IC):", x_train_col_ic.shape[0], 
             "Number of validation data:", x_val.shape[0])
+        print("Starting training with weights: ", self.cfg.nn.weighting.weights)
         
         folder_name=self.folder_name_f2(self.cfg)
         os.makedirs(os.path.join(self.cfg.dirs.model_dir, folder_name),exist_ok=True)
@@ -874,12 +875,13 @@ class NeuralNetworkActions():
                 "ic": d_ic.cpu()
             })
 
-            self.weighting_scheme.update_smoothing(
-                L_data=ld.detach(),
-                L_dt=ldt.detach(),
-                L_pinn=lp.detach(),
-                L_ic=lic.detach(),
-            )
+            if self.cfg.nn.weighting.update_weight_method=="MA":
+                self.weighting_scheme.update_smoothing(
+                    L_data=ld.detach(),
+                    L_dt=ldt.detach(),
+                    L_pinn=lp.detach(),
+                    L_ic=lic.detach(),
+                )
 
             """
             if self.optimizer != "LBFGS":
@@ -945,11 +947,52 @@ class NeuralNetworkActions():
                     self.weighting_scheme.update_weights_MA(epoch)
                 #elif self.cfg.nn.weighting.update_weight_method=="ID":
                 #    self.weighting_scheme.update_weights_ID(epoch, self._last_ode1)
-
             
                 # log some plots to wandb
                 if wandb_run is not None:
                     self.log_plot(val_outputs, y_val, epoch, wandb_run,x_val)
+
+            if (epoch + 1) == self.cfg.nn.weighting.switch_epoch:
+                #new_weights = torch.tensor([1.0, 1e-3, 1e-3, 1e-3], device=self.device)
+                #self.weighting_scheme.weights = new_weights
+                #print("Weights updated to:", new_weights)
+                
+                # Extract absolute losses at this epoch
+                Ld = float(self.loss_data.item())
+                Lt = float(self.loss_dt.item())
+                Lp = float(self.loss_pinn.item())
+                Lic = float(self.loss_pinn_ic.item())
+
+                eps = 1e-12
+                beta = 0.3   # fraction of data loss magnitude for physics weighting
+
+                # Target magnitude for weighted terms
+                target = beta * Ld
+
+                # Compute weights so that:
+                #    w_dt*Lt   ≈ target
+                #    w_pinn*Lp ≈ target
+                w_data_new  = 1.0
+                w_dt_new    = target / (Lt + eps)
+                w_pinn_new  = target / (Lp + eps)
+                w_ic_new    = 0   # or set = 0.0 if you want IC weaker
+
+                # Clip weights to safe numeric limits
+                w_dt_new    = min(w_dt_new,   1e-2)
+                w_pinn_new  = min(w_pinn_new, 1e-2)
+                #w_ic_new    = min(w_ic_new,   1e-2)
+
+                new_weights = torch.tensor(
+                    [w_data_new, w_dt_new, w_pinn_new, w_ic_new],
+                    device=self.device
+                )
+
+                # Assign to weighting module
+                self.weighting_scheme.weights = new_weights
+
+                print("New static loss-based weights:", new_weights)
+                print(f"Check: Ld={Ld:.3e}, w_dt*Lt={w_dt_new*Lt:.3e}, w_pinn*Lp={w_pinn_new*Lp:.3e}")
+                
                 
             if (epoch + 1 ) % 50 == 0:
                 print(f'Epoch [{epoch+1}/{self.cfg.nn.num_epochs}], Loss: {self.loss_total.item():.4f}, Loss_data: {self.loss_data.item():.4f}, Loss_dt: {self.loss_dt.item():.4f}, Loss_pinn: {self.loss_pinn.item():.4f} , Loss_pinn_ic : {self.loss_pinn_ic.item():.4f}', val_loss, val_dt_loss)
