@@ -1,26 +1,24 @@
 #!/bin/bash
 #BSUB -q gpuv100
-#BSUB -gpu "num=1:mode=exclusive_process"
 #BSUB -J pinn_ma_static
-#BSUB -n 8
-#BSUB -W 24:00
+#BSUB -n 2
+#BSUB -W 12:00
 #BSUB -R "span[hosts=1]"
-#BSUB -R "rusage[mem=24GB]"
+#BSUB -R "rusage[mem=8GB]"
 #BSUB -o logs/%J.out
 #BSUB -e logs/%J.err
 
 echo "Job started on $(hostname) at $(date)"
 
-module swap cuda/12.1
+module swap cuda/11.7
 source .venv/bin/activate
 
 mkdir -p logs model/SM_AVR_GOV
 
-export OMP_NUM_THREADS=8
-export MKL_NUM_THREADS=8
-export OPENBLAS_NUM_THREADS=8
-export NUMEXPR_NUM_THREADS=8
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256,expandable_segments:True
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+export NUMEXPR_NUM_THREADS=2
 export WANDB_MODE=disabled
 
 DATASETS=(set5_mixed)
@@ -36,7 +34,7 @@ for DATASET in "${DATASETS[@]}"; do
   echo "---- Training with MA weighting ----"
   python 2_1_training_models.py \
       --dataset "${DATASET}" \
-      --epochs 1000 \
+      --epochs 10000 \
       --weighting MA \
       --lr 1e-3 \
       --perc_data 1 \
@@ -46,7 +44,7 @@ for DATASET in "${DATASETS[@]}"; do
   echo "---- Training with Static weighting ----"
   python 2_1_training_models.py \
       --dataset "${DATASET}" \
-      --epochs 1000 \
+      --epochs 10000 \
       --weighting Static \
       --lr 1e-3 \
       --perc_data 1 \

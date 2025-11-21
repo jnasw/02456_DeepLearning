@@ -245,13 +245,14 @@ if __name__ == "__main__":
     cfg.dataset.perc_of_col_points = 1
 
     dataset_names = [
-        "set5_exploit",
-        "set5_explore",
-        "set5_mixed",
-        "set5_wide",
-        "set5_mutated",
-        "set5_sparse",
-        "set5_dense",
+        "set3_grid"
+        #"set5_exploit",
+        #"set5_explore",
+        #"set5_mixed",
+        #"set5_wide",
+        #"set5_mutated",
+        #"set5_sparse",
+        #"set5_dense",
     ]
 
     EPOCHS = 1000
