@@ -849,10 +849,15 @@ class NeuralNetworkActions():
             lic = _ensure_tensor(self._loss_pinn_ic_last)    # shape: scalar
 
             # History update
-            self.history["loss_data"].append(ld.cpu())
-            self.history["loss_dt"].append(ldt.cpu())
-            self.history["loss_pinn"].append(lp.cpu())
-            self.history["loss_pinn_ic"].append(lic.cpu())
+            #self.history["loss_data"].append(ld.cpu())
+            #self.history["loss_dt"].append(ldt.cpu())
+            #self.history["loss_pinn"].append(lp.cpu())
+            #self.history["loss_pinn_ic"].append(lic.cpu())
+
+            self.history["loss_data"].append(ld.detach())
+            self.history["loss_dt"].append(ldt.detach())
+            self.history["loss_pinn"].append(lp.detach())
+            self.history["loss_pinn_ic"].append(lic.detach())
 
             # Gradient-like finite difference estimate
             if len(self.history["loss_data"]) > 1:
