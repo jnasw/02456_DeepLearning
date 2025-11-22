@@ -864,6 +864,7 @@ class NeuralNetworkActions():
                     if (
                         self.cfg.nn.weighting.update_weight_method == "DN"
                         and (epoch + 1) % self.cfg.nn.weighting.update_weights_freq == 0
+                        and self.current_optimizer != "LBFGS"
                     ):
                         # group-level losses: [data, dt_mean, pinn_mean, ic]
                         comp_losses = [loss_data, mean_loss_dt, mean_loss_pinn, loss_pinn_ic]
