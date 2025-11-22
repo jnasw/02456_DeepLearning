@@ -8,6 +8,9 @@ class PINNWeighting:
         self.scheme = cfg.nn.weighting.update_weight_method
         self.update_weights_freq = cfg.nn.weighting.update_weights_freq
         self.beta = beta
+        self.lambda_dn = None 
+        self.bias_correction = cfg.nn.weighting.get("bias_correction", False)
+        self.dn_counter = 0
         self.wandb_run = wandb_run
         self.loss_dimension = (1 if (cfg.nn.weighting.flag_mean_weights or cfg.nn.time_factored_loss) else loss_dimension)
         self.device = device
@@ -81,7 +84,7 @@ class PINNWeighting:
         # Calculate total loss
         self.total_loss = torch.stack(individual_weighted_losses).sum()        
         # Update weights with the desired frequency, iteration_count is used to check if the update is needed and not epoch due to lbfgs internal iterations
-        if (epoch + 1) % self.update_weights_freq == 0 and self.scheme not in ['Sam', 'MA', 'ID']: 
+        if (epoch + 1) % self.update_weights_freq == 0 and self.scheme not in ['Sam', 'MA', 'ID', 'DN']: 
             if epoch != self.epoch_flag: # To avoid multiple updates in the same epoch
                 self.update_weights(individual_weighted_losses, epoch)
                 #print("Updated Weights", self.weights.tolist())
@@ -164,6 +167,67 @@ class PINNWeighting:
         elif self.scheme == 'Static':
             return
         
+        elif self.scheme == "DN":
+            # Deguchi (2023) dynamic normalisation for group-level losses.
+            # losses: [data, dt_mean, pinn_mean, ic]
+            eps = 1e-12
+            grad_norms = []
+
+            # Compute gradient norms for each group loss
+            for l in losses:
+                self.model.zero_grad()
+                l.backward(retain_graph=True)
+                g = torch.norm(
+                    torch.stack([
+                        p.grad.detach().flatten().norm()
+                        for p in self.model.parameters()
+                        if p.grad is not None
+                    ])
+                )
+                grad_norms.append(g + eps)
+
+            grad_norms = torch.stack(grad_norms).to(self.device)  # shape: [4]
+
+            # Index of physics / PDE loss in [data, dt, pinn, ic]
+            idx_pde = 2
+            grad_pde = grad_norms[idx_pde]
+
+            # Eq. (22): λ̂_j = ||∇L_pde|| / ||∇L_j||
+            lambda_hat = grad_pde / grad_norms
+
+            # Normalise λ̂ so its mean is 1 (Eq. 24–25 style)
+            lambda_hat = lambda_hat / lambda_hat.mean()
+
+            # Initialisation or EMA update (Eq. 23)
+            if self.lambda_dn is None:
+                self.lambda_dn = lambda_hat.detach()
+                self.dn_counter = 0
+            else:
+                b = self.beta
+                self.lambda_dn = b * self.lambda_dn + (1.0 - b) * lambda_hat
+
+            # Bias correction (Eq. 26)
+            if self.bias_correction:
+                self.dn_counter += 1
+                correction = 1.0 - (self.beta ** self.dn_counter)
+                new_weights = self.lambda_dn / correction
+            else:
+                new_weights = self.lambda_dn
+
+            # Optional final re-normalization: keep mean ~1
+            new_weights = new_weights / new_weights.mean()
+
+            # Apply balancing term and mask (both length 4)
+            new_weights = new_weights * self.balancing_term.to(self.device)
+            new_weights = new_weights * self.weight_mask
+
+            # Assign back safely
+            with torch.no_grad():
+                self.weights = new_weights.detach()
+
+            print("[DN-PINN] Updated group weights:", self.weights.tolist())
+            self.log_weights(epoch)
+            return
 
         else:
             raise ValueError("Unknown weighting scheme. Choose either 'gradient' or 'ntk' or 'sam'.")

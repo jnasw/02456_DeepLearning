@@ -115,6 +115,9 @@ class NeuralNetworkActions():
             "weights": [],
             "grad_like": []
         }
+        self.beta = cfg.nn.weighting.get("beta", 0.99)
+        self.bias_correction = cfg.nn.weighting.get("bias_correction", False)
+        self.dn_counter = 0        # needed for bias-correction (n in eq. 26)
         
 
 
@@ -793,7 +796,7 @@ class NeuralNetworkActions():
 
                     # Assign to weighting module
                     self.weighting_scheme.weights = new_weights
-                    print("New static loss-based weights:", new_weights)
+                    print("New weights after opt switch:", new_weights)
                     
     
             
@@ -852,6 +855,24 @@ class NeuralNetworkActions():
                     loss_pinn = [self.criterion(dydt1[:, i], ode1[:, i]) for i in range(dydt1.shape[1])]
                     mean_loss_pinn = torch.mean(torch.stack(loss_pinn))
                     loss_pinn_ic = self.criterion(output_col0, y_train_col_ic)
+
+                    # dynamic weighitng
+                    mean_loss_dt = torch.mean(torch.stack(loss_dt))
+                    mean_loss_pinn = torch.mean(torch.stack(loss_pinn))
+
+                    # --- 3. DN-PINN update BEFORE main backward ---
+                    if (
+                        self.cfg.nn.weighting.update_weight_method == "DN"
+                        and (epoch + 1) % self.cfg.nn.weighting.update_weights_freq == 0
+                    ):
+                        # group-level losses: [data, dt_mean, pinn_mean, ic]
+                        comp_losses = [loss_data, mean_loss_dt, mean_loss_pinn, loss_pinn_ic]
+                        self.weighting_scheme.update_weights(comp_losses, epoch)
+
+                        # start with clean gradients after DN update
+                        self.optimizer.zero_grad()
+
+
                     loss_total, self.losses = self.weighting_scheme.compute_weighted_loss(loss_data, loss_dt, loss_pinn, loss_pinn_ic, epoch)
                     self.loss_total = loss_total
                     self.loss_data= loss_data
@@ -993,6 +1014,13 @@ class NeuralNetworkActions():
                     self.weighting_scheme.update_weights(self.losses, epoch)
                 elif self.cfg.nn.weighting.update_weight_method=="MA":
                     self.weighting_scheme.update_weights_MA(epoch)
+                #elif self.cfg.nn.weighting.update_weight_method=="DN":
+                #    if self.current_optimizer != "Adam" and self.scheme == "DN":
+                #        # Skip DN-PINN during LBFGS
+                #        print("Skipping DN-PINN weight update during LBFGS")
+                #        continue
+                #    self.weighting_scheme.update_weights(self.losses, epoch)
+                
                 #elif self.cfg.nn.weighting.update_weight_method=="ID":
                 #    self.weighting_scheme.update_weights_ID(epoch, self._last_ode1)
             
