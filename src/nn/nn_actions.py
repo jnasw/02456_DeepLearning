@@ -202,6 +202,17 @@ class NeuralNetworkActions():
         else:
             raise Exception("Optimizer not found")
         return optimizer
+    
+    def _switch_to_optimizer2(self):
+        """Switch optimizer from LBFGS to Adam using cfg.nn.optimizer_2."""
+        opt2 = self.cfg.nn.optimizer_2
+        print(f"[Multi-Optim] Switching to Adam at lr={opt2.lr}")
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=opt2.lr,
+            betas=tuple(opt2.betas),
+        )
+        self.current_optimizer = "Adam"
         
     def custom_learning_rate(self, lr_name): # Choose between "StepLR", "MultiStepLR", "ExponentialLR", "ReduceLROnPlateau
         """
@@ -762,7 +773,28 @@ class NeuralNetworkActions():
             ])
 
         print("getting in training")
+
+        # --- Multi-optimizer state ---
+        self.current_optimizer = "LBFGS"   # default from init
+        multi_optim_enabled = getattr(self.cfg.nn, "multi_optim", False)
+        switch_epoch = getattr(self.cfg.nn, "switch_optim_epoch", None)
+
         for epoch in range(self.cfg.nn.num_epochs):
+
+            # OPTIMIZER SWITCH: LBFGS → Adam
+            if multi_optim_enabled and switch_epoch is not None:
+                if epoch == switch_epoch:
+                    print(f"[Epoch {epoch}] Switching from LBFGS to Adam")
+                    self._switch_to_optimizer2()
+                    new_weights = torch.tensor(
+                        [1, 1e-3, 1e-4, 1e-3],
+                        device=self.device
+                    )
+
+                    # Assign to weighting module
+                    self.weighting_scheme.weights = new_weights
+                    print("New static loss-based weights:", new_weights)
+                    
     
             
             self.model.train() # set the model to training mode
@@ -802,7 +834,12 @@ class NeuralNetworkActions():
                         
                         return loss_total
                 
-                    self.optimizer.step(closure) # update the weights of the model
+                    if self.current_optimizer == "LBFGS":
+                        self.optimizer.step(closure)
+                    else:
+                        self.optimizer.zero_grad()
+                        loss = closure()
+                        self.optimizer.step()
             else:
                 def closure():
                     output, dydt0, ode0 = self.calculate_point_grad2(x_train, y_train) # calculate nn output and its gradient for the data points, and the ode solution for the target y_train
@@ -831,7 +868,13 @@ class NeuralNetworkActions():
                     loss_total.backward()
                     return loss_total
                 
-                self.optimizer.step(closure)
+                if self.current_optimizer == "LBFGS":
+                    self.optimizer.step(closure)
+                else:
+                    # Adam: no closure
+                    self.optimizer.zero_grad()
+                    loss = closure()       # computes losses + backward
+                    self.optimizer.step()
 
 
             def _ensure_tensor(x):
@@ -957,7 +1000,7 @@ class NeuralNetworkActions():
                 if wandb_run is not None:
                     self.log_plot(val_outputs, y_val, epoch, wandb_run,x_val)
 
-            if (epoch + 1) == self.cfg.nn.weighting.switch_epoch:
+            if (self.cfg.nn.weighting.two_phase_weights==True) and (epoch + 1) == self.cfg.nn.weighting.switch_epoch:
                 #new_weights = torch.tensor([1.0, 1e-3, 1e-3, 1e-3], device=self.device)
                 #self.weighting_scheme.weights = new_weights
                 #print("Weights updated to:", new_weights)
