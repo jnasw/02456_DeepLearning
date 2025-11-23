@@ -865,6 +865,7 @@ class NeuralNetworkActions():
                         self.cfg.nn.weighting.update_weight_method == "DN"
                         and (epoch + 1) % self.cfg.nn.weighting.update_weights_freq == 0
                         and self.current_optimizer != "LBFGS"
+                        and (epoch + 1) >= self.cfg.nn.weighting.dn_start_epoch
                     ):
                         # group-level losses: [data, dt_mean, pinn_mean, ic]
                         comp_losses = [loss_data, mean_loss_dt, mean_loss_pinn, loss_pinn_ic]
@@ -1010,7 +1011,7 @@ class NeuralNetworkActions():
             #if total_iteration_count - last_update_iteration > self.cfg.nn.weighting.update_weights_freq:
                 # update the weights of the loss functions
             #    last_update_iteration = total_iteration_count
-            if (epoch + 1) % self.cfg.nn.weighting.update_weights_freq == 0:
+            if (epoch + 1) % self.cfg.nn.weighting.update_weights_freq == 0 and (epoch + 1) >= self.cfg.nn.weighting.dn_start_epoch:
                 if self.cfg.nn.weighting.update_weight_method=="Sam":
                     self.weighting_scheme.update_weights(self.losses, epoch)
                 elif self.cfg.nn.weighting.update_weight_method=="MA":
