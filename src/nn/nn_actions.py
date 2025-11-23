@@ -734,6 +734,26 @@ class NeuralNetworkActions():
         y_train_col_ic = to_dev(y_train_col_ic)
         x_val          = to_dev(x_val, True)
         y_val          = to_dev(y_val)
+
+        #  Adaptive Collocation Initialization (non-batch only) 
+        if getattr(self.cfg.nn, "adaptive_col", None) and self.cfg.nn.adaptive_col.enabled:
+            # collocation becomes mutable
+            self.x_col = x_train_col.clone().detach().to(self.device)
+            self.x_col.requires_grad_(True)
+
+            # store original uniform grid (for resample baseline)
+            self.x_col_original = self.x_col.clone().detach()
+
+            # build evaluation grid
+            self.x_eval = self.create_eval_grid()  # CPU
+            self.x_eval = self.x_eval.to(self.device).requires_grad_(True)
+            out_dir = os.path.join(self.cfg.dirs.model_dir, "online_collocation")
+            os.makedirs(out_dir, exist_ok=True)
+            torch.save(self.x_eval.cpu(), os.path.join(out_dir, "eval_grid.pt"))
+            print("[DEBUG] Saved eval_grid.pt")
+        else:
+            # static collocation
+            self.x_col = x_train_col
         
         # Create DataLoaders for batch processing
         batch_size = self.cfg.nn.batch_size if self.cfg.nn.batch_size != "None" else max(len(x_train), len(x_train_col), len(x_train_col_ic))
@@ -846,17 +866,25 @@ class NeuralNetworkActions():
             else:
                 def closure():
                     output, dydt0, ode0 = self.calculate_point_grad2(x_train, y_train) # calculate nn output and its gradient for the data points, and the ode solution for the target y_train
-                    dydt1, ode1 = self.calculate_point_grad2(x_train_col, None)
+                    # Use adaptive collocation points if enabled
+                    if self.cfg.nn.adaptive_col.enabled:
+                        dydt1, ode1 = self.calculate_point_grad2(self.x_col, None)
+                    else:
+                        dydt1, ode1 = self.calculate_point_grad2(x_train_col, None)
+
                     output_col0 = self.forward_pass(x_train_col_ic)
                     loss_data = self.criterion(output, y_train)
                     loss_dt = [self.criterion(dydt0[:, i], ode0[:, i]) for i in range(dydt0.shape[1])]
                     mean_loss_dt = torch.mean(torch.stack(loss_dt))
-                    mean_loss_pinn, loss_pinn = self.calc_adapt_criterion_loss(x_train_col, dydt1, ode1)
+                    if self.cfg.nn.adaptive_col.enabled:
+                        mean_loss_pinn, loss_pinn = self.calc_adapt_criterion_loss(self.x_col, dydt1, ode1)
+                    else:
+                        mean_loss_pinn, loss_pinn = self.calc_adapt_criterion_loss(x_train_col, dydt1, ode1)
                     loss_pinn = [self.criterion(dydt1[:, i], ode1[:, i]) for i in range(dydt1.shape[1])]
                     mean_loss_pinn = torch.mean(torch.stack(loss_pinn))
                     loss_pinn_ic = self.criterion(output_col0, y_train_col_ic)
 
-                    # dynamic weighitng
+                    # dynamic weighting
                     mean_loss_dt = torch.mean(torch.stack(loss_dt))
                     mean_loss_pinn = torch.mean(torch.stack(loss_pinn))
 
@@ -958,6 +986,41 @@ class NeuralNetworkActions():
                 self.scheduler.step()
             """
             #total_iteration_count += iteration_count
+
+            #  Adaptive Collocation Update Step (non-batch only) 
+            if getattr(self.cfg.nn, "adaptive_col", None) \
+            and self.cfg.nn.adaptive_col.enabled \
+            and (epoch + 1) % self.cfg.nn.adaptive_col.adapt_every == 0:
+            #and self.current_optimizer != "LBFGS" \
+
+                # compute residuals
+                residuals = self.compute_residuals_on_grid(self.x_eval)
+
+                # update collocation using Strategy B
+                self.x_col = self.update_collocation(
+                    old_points=self.x_col,
+                    eval_grid=self.x_eval,
+                    residuals=residuals,
+                    strategy=self.cfg.nn.adaptive_col.strategy,
+                    ratio=self.cfg.nn.adaptive_col.ratio
+                )
+
+                # ensure correct device + autograd
+                self.x_col = self.x_col.to(self.device).requires_grad_(True)
+
+                # optional snapshot logging
+                if self.cfg.nn.adaptive_col.get("save_snapshots", False):
+                    out_dir = os.path.join(
+                        self.cfg.dirs.model_dir,
+                        "online_collocation"
+                    )
+                    os.makedirs(out_dir, exist_ok=True)
+                    torch.save(self.x_col, os.path.join(out_dir, f"collocation_snap_{epoch+1}.pt"))
+                    np.save(os.path.join(out_dir, f"residuals_{epoch+1}.npy"), residuals)
+
+                print(f"[Adaptive Collocation] Epoch {epoch+1}: "
+                    f"Resampled {int(self.cfg.nn.adaptive_col.ratio * self.x_col_original.shape[0])} points")
+            
 
             # Validation
             self.model.eval()
@@ -1369,3 +1432,101 @@ class NeuralNetworkActions():
             if i % 2 != 0:
                 plt.show()
         return
+    
+    def create_eval_grid(self):
+        """
+        Build a dense evaluation grid for residual-based collocation.
+        Returns a transformed tensor on CPU (device will be applied later).
+        """
+
+        cfg_eval = self.cfg.nn.adaptive_col.eval_grid
+        n_time = cfg_eval.n_time
+        θ_min, θ_max = cfg_eval.theta_range
+        ω_min, ω_max = cfg_eval.omega_range
+
+        # --- build axis vectors ---
+        t_vals    = torch.linspace(0, self.data_loader.time, steps=n_time)
+        theta_vals = torch.linspace(θ_min, θ_max, steps=50)
+        omega_vals = torch.linspace(ω_min, ω_max, steps=50)
+
+        # --- Cartesian grid (time × theta × omega) ---
+        T, TH, OM = torch.meshgrid(t_vals, theta_vals, omega_vals, indexing="ij")
+        T = T.reshape(-1, 1)
+        TH = TH.reshape(-1, 1)
+        OM = OM.reshape(-1, 1)
+
+        # --- fixed constants for the other machine states ---
+        # (same as your notebook prototype)
+        E_d_dash = torch.zeros_like(T)
+        E_q_dash = torch.ones_like(T)
+        R_F      = torch.ones_like(T)
+        V_r      = 1.105 * torch.ones_like(T)
+        E_fd     = 1.08 * torch.ones_like(T)
+        P_sv     = 0.7048 * torch.ones_like(T)
+        P_m      = 0.7048 * torch.ones_like(T)
+
+        x_eval = torch.cat(
+            [T, TH, OM, E_d_dash, E_q_dash, R_F, V_r, E_fd, P_sv, P_m],
+            dim=1
+        )
+
+        # transform into network input space
+        x_eval = self.data_loader.transform_input(x_eval)
+
+        return x_eval  # leave device/grad to caller
+    
+    def compute_residuals_on_grid(self, x_eval):
+        """
+        Compute physics residual per point on a full evaluation grid.
+        Returns a 1D NumPy array of residual magnitudes (size N_eval).
+        """
+
+        self.model.eval()
+
+        # clone + detach + requires_grad again → needed for autograd
+        x_eval_req = x_eval.clone().detach().to(self.device).requires_grad_(True)
+
+        # no torch.no_grad() here!
+        dydt_eval, ode_eval = self.calculate_point_grad2(x_eval_req, None)
+
+        # mse per point across all state dimensions
+        residuals = torch.mean((dydt_eval - ode_eval)**2, dim=1)
+
+        return residuals.detach().cpu().numpy()
+    
+    def update_collocation(self, old_points, eval_grid, residuals, strategy="resample", ratio=0.3):
+        """
+        Strategy B (resample):
+        - Keep collocation size approximately constant
+        - Replace 'ratio' fraction of points with high-residual eval points
+        - Preserve global coverage by retaining some original uniform points
+        """
+
+        if strategy.lower() != "resample":
+            raise ValueError("update_collocation() called with strategy != resample")
+
+        N_col = old_points.shape[0]
+        N_eval = eval_grid.shape[0]
+
+        # number of points to replace
+        N_resample = int(ratio * N_col)
+        N_stay     = N_col - N_resample
+
+        # --- 1. Choose which original points remain (uniform coverage) ---
+        # sample from original uniform grid (saved at init time)
+        idx_stay = torch.randperm(self.x_col_original.shape[0])[:N_stay]
+        baseline_subset = self.x_col_original[idx_stay].clone().detach()
+
+        # --- 2. Take top-residual points from eval grid ---
+        sorted_idx = np.argsort(residuals)[::-1]     # descending
+        idx_top = np.argsort(residuals)[::-1][:N_resample].copy()
+        high_res_points = eval_grid[idx_top].clone().detach()
+
+        # --- 3. Combine and shuffle ---
+        x_new = torch.cat([baseline_subset, high_res_points], dim=0)
+
+        perm = torch.randperm(x_new.shape[0])
+        x_new = x_new[perm]
+
+        return x_new
+    
