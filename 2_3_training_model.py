@@ -35,28 +35,24 @@ def parse_args():
     p.add_argument("--perc_data", type=float, default=1.0)
     p.add_argument("--perc_col", type=float, default=1.0)
     p.add_argument("--switch_epoch", type=int, default=200)
+    p.add_argument("--path", type=str, default=None)
 
     return p.parse_args()
 
-# -------------------------------------------------------------
 # MAIN TRAINING FUNCTION
-# -------------------------------------------------------------
 def main():
     args = parse_args()
     device = detect_device()
 
-    # -------------------------------------------------------------
-    # Load config
-    # -------------------------------------------------------------
+     # Load config
     cfg = OmegaConf.load("src/conf/setup_dataset_nn.yaml")
 
     cfg.nn.type = "DynamicNN"
     cfg.nn.early_stopping = False
+    cfg.nn.path = args.path
 
-    # -------------------------------------------------------------
     # HPC TWO-PHASE OPTIMIZER SETUP
-    # -------------------------------------------------------------
-    cfg.nn.num_epochs = 10500              # 500 LBFGS + 10000 Adam
+    cfg.nn.num_epochs = 10000              # 500 LBFGS + 10000 Adam
     cfg.nn.multi_optim = True
     cfg.nn.switch_optim_epoch = 500        # switch LBFGS → Adam
 
@@ -76,9 +72,7 @@ def main():
     print(f"LBFGS → Adam at epoch {cfg.nn.switch_optim_epoch}")
     print("==============================================\n")
 
-    # -------------------------------------------------------------
     # Dataset loading
-    # -------------------------------------------------------------
     dataset_path = f"data/SM_AVR_GOV/dataset_{args.dataset}.pkl"
     if not os.path.exists(dataset_path):
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
@@ -86,15 +80,11 @@ def main():
     ds = DataSampler(cfg, dataset_path=dataset_path)
     modelling_full = SynchronousMachineModels(cfg)
 
-    # -------------------------------------------------------------
     # Initialize PINN trainer
-    # -------------------------------------------------------------
     net = NeuralNetworkActions(cfg, modelling_full, data_loader=ds)
     net.model.to(device)
 
-    # -------------------------------------------------------------
     # RUN TRAINING
-    # -------------------------------------------------------------
     net.pinn_train2(
         num_of_skip_data_points=1,
         num_of_skip_col_points=1,
@@ -102,15 +92,10 @@ def main():
         wandb_run=None,
     )
 
-    # -------------------------------------------------------------
     # PRINT SUMMARY
-    # -------------------------------------------------------------
-    print("\n==============================================")
     print("Training completed.")
-    print("==============================================")
     print(f"Final total loss: {net.loss_total.item():.4e}")
     print(f"Data loss:        {net.loss_data.item():.4e}")
     print(f"dt loss:          {net.loss_dt.item():.4e}")
     print(f"PINN loss:        {net.loss_pinn.item():.4e}")
     print(f"IC loss:          {net.loss_pinn_ic.item():.4e}")
-    print("==============================================\n")

@@ -9,9 +9,7 @@ from src.ode.sm_models_d import SynchronousMachineModels
 from src.nn.nn_actions import NeuralNetworkActions
 
 
-# ============================================================
 # DEVICE SELECTION
-# ============================================================
 def detect_device():
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -21,9 +19,7 @@ def detect_device():
         return torch.device("cpu")
 
 
-# ============================================================
 # ARG PARSER (LBFGS-only)
-# ============================================================
 def parse_args():
     p = argparse.ArgumentParser()
 
@@ -52,9 +48,7 @@ def parse_args():
     return p.parse_args()
 
 
-# ============================================================
 # MAIN
-# ============================================================
 def main():
     args = parse_args()
     device = detect_device()
@@ -68,7 +62,7 @@ def main():
     cfg.nn.lr = args.lr
     cfg.nn.early_stopping = False
 
-    # **LBFGS ONLY**
+    # LBFGS ONLY
     cfg.nn.multi_optim = False
     #cfg.nn.optimizer = "LBFGS"
 
@@ -84,9 +78,7 @@ def main():
     cfg.dataset.perc_of_data_points = args.perc_data
     cfg.dataset.perc_of_col_points = args.perc_col
 
-    # ---------------------------------------------------------
     # Adaptive collocation config
-    # ---------------------------------------------------------
     cfg.nn.adaptive_col = OmegaConf.create({
         "enabled": args.adaptive_enabled,
         "adapt_every": args.adapt_every,
@@ -121,13 +113,12 @@ def main():
     )
 
     # summary
-    print("\n=========== LBFGS TRAINING COMPLETE ===========")
+    print("\nLBFGS TRAINING COMPLETE ")
     print(f"Final total loss: {net.loss_total.item():.4e}")
     print(f"Data loss       : {net.loss_data.item():.4e}")
     print(f"dt loss         : {net.loss_dt.item():.4e}")
     print(f"PINN loss       : {net.loss_pinn.item():.4e}")
     print(f"IC loss         : {net.loss_pinn_ic.item():.4e}")
-    print("================================================\n")
 
 
 if __name__ == "__main__":

@@ -779,11 +779,18 @@ class NeuralNetworkActions():
 
         # add csv logging
         start_time = time.time()
-        log_path = os.path.join(
-            self.cfg.dirs.model_dir,
-            folder_name,
-            f"training_log_{self.cfg.nn.weighting.update_weight_method}.csv"
-        )
+        if self.cfg.nn.path is not None:
+            log_path = os.path.join(
+                self.cfg.dirs.model_dir,
+                folder_name,
+                f"training_log_{self.cfg.nn.weighting.update_weight_method}_{self.cfg.nn.path}.csv"
+            )
+        else:
+            log_path = os.path.join(
+                self.cfg.dirs.model_dir,
+                folder_name,
+                f"training_log_{self.cfg.nn.weighting.update_weight_method}.csv"
+            )
         with open(log_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([

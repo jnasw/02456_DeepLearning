@@ -30,6 +30,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--perc_data", type=float, default=1.0)
     p.add_argument("--perc_col", type=float, default=1.0)
+    p.add_argument("--path", type=str, default=None)
 
     return p.parse_args()
 
@@ -41,6 +42,7 @@ def main():
     # Load configuration
     cfg = OmegaConf.load("src/conf/setup_dataset_nn.yaml")
     cfg.nn.type = "DynamicNN"
+    cfg.nn.path = args.path
     cfg.nn.num_epochs = args.epochs
     cfg.nn.early_stopping = False
     cfg.nn.weighting.update_weight_method = args.weighting
@@ -68,7 +70,7 @@ def main():
     net = NeuralNetworkActions(cfg, modelling_full, data_loader=ds)
     net.model.to(device)
 
-    # Run the actual training loop (LBFGS inside)
+    # Run the training loop 
     net.pinn_train2(
         num_of_skip_data_points=1,
         num_of_skip_col_points=1,

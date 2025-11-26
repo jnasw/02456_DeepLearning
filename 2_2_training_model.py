@@ -9,9 +9,7 @@ from src.nn.nn_actions import NeuralNetworkActions
 from src.ode.sm_models_d import SynchronousMachineModels
 
 
-# ----------------------------------------------
 # DEVICE SELECTION
-# ----------------------------------------------
 def detect_device():
     if torch.cuda.is_available():
         dev = torch.device("cuda")
@@ -23,9 +21,7 @@ def detect_device():
     return dev
 
 
-# ----------------------------------------------
 # ARGUMENTS
-# ----------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser()
 
@@ -35,31 +31,27 @@ def parse_args():
     p.add_argument("--perc_data", type=float, default=1.0)
     p.add_argument("--perc_col", type=float, default=1.0)
     p.add_argument("--switch_epoch", type=int, default=200)
+    p.add_argument("--path", type=str, default=None)
 
     return p.parse_args()
 
 
-# ----------------------------------------------
 # MAIN TRAINING FUNCTION
-# ----------------------------------------------
 def main():
     args = parse_args()
     device = detect_device()
 
-    # -------------------------------------------------------------
     # Load config
-    # -------------------------------------------------------------
     cfg = OmegaConf.load("src/conf/setup_dataset_nn.yaml")
 
     cfg.nn.type = "DynamicNN"
     cfg.nn.num_epochs = args.epochs
     cfg.nn.early_stopping = False
+    cfg.nn.path = args.path
 
-    # -------------------------------------------------------------
     # TWO-PHASE WEIGHTING SETUP
     # Phase 1: data-only
     # Phase 2: static PINN weights injected at switch_epoch
-    # -------------------------------------------------------------
     cfg.nn.weighting.update_weight_method = "Static"
     cfg.nn.weighting.weights = [1.0, 0.0, 0.0, 0.0]
     cfg.nn.weighting.switch_epoch = args.switch_epoch
@@ -72,31 +64,24 @@ def main():
     if args.lr is not None:
         cfg.nn.lr = args.lr
 
-    # -------------------------------------------------------------
     # Dataset loading
-    # -------------------------------------------------------------
     dataset_path = f"data/SM_AVR_GOV/dataset_{args.dataset}.pkl"
     if not os.path.exists(dataset_path):
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
 
-    print(f"\n=== Training on dataset: {dataset_path}")
-    print(f"=== Epochs: {args.epochs}")
-    print(f"=== Switch epoch: {args.switch_epoch}")
-    print(f"=== Device: {device}")
-    print("==============================================\n")
+    print(f"\nTraining on dataset: {dataset_path}")
+    print(f"Epochs: {args.epochs}")
+    print(f"Switch epoch: {args.switch_epoch}")
+    print(f"Device: {device}")
 
     ds = DataSampler(cfg, dataset_path=dataset_path)
     modelling_full = SynchronousMachineModels(cfg)
 
-    # -------------------------------------------------------------
     # Initialize PINN trainer
-    # -------------------------------------------------------------
     net = NeuralNetworkActions(cfg, modelling_full, data_loader=ds)
     net.model.to(device)
 
-    # -------------------------------------------------------------
     # RUN TRAINING (LBFGS INSIDE)
-    # -------------------------------------------------------------
     net.pinn_train2(
         num_of_skip_data_points=1,
         num_of_skip_col_points=1,
@@ -104,18 +89,13 @@ def main():
         wandb_run=None,
     )
 
-    # -------------------------------------------------------------
     # PRINT SUMMARY
-    # -------------------------------------------------------------
-    print("\n==============================================")
     print("Training completed.")
-    print("==============================================")
     print(f"Final total loss: {net.loss_total.item():.4e}")
     print(f"Data loss:        {net.loss_data.item():.4e}")
     print(f"dt loss:          {net.loss_dt.item():.4e}")
     print(f"PINN loss:        {net.loss_pinn.item():.4e}")
     print(f"IC loss:          {net.loss_pinn_ic.item():.4e}")
-    print("==============================================\n")
 
 
 if __name__ == "__main__":

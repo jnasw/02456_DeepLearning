@@ -28,7 +28,7 @@ def compute_ode_residual(solution, ode_func):
     return np.mean(residuals)
 
 
-# --- Main dataset creation pipeline ---
+#  Main dataset creation pipeline 
 @hydra.main(config_path="src/conf", config_name="setup_dataset.yaml", version_base=None)
 def main(config):
     """
@@ -49,7 +49,7 @@ def main(config):
     4. Solves the ODE model for each and saves datasets.
     """
 
-    # --- Initialize wandb run (safe for local/offline too) ---
+    #  Initialize wandb run (safe for local/offline too) 
     run = wandb.init(project=config.wandb.project if "wandb" in config else "PowerPINN",
                      name="dataset_generation",
                      mode="online")   # or "disabled" if you don’t want uploads
@@ -58,17 +58,17 @@ def main(config):
     print("CUDA available:", torch.cuda.is_available())
     print("mps available:", torch.backends.mps.is_available())
 
-    # --- Initialize system models ---
+    #  Initialize system models 
     SM_model = ODE_modelling(config)
     modelling_full = SynchronousMachineModels(config)
 
     # STEP 1 — Generate base dataset (Set 4)
-    print("\n--- Generating base dataset: Set 4 (LHS/Random) ---")
+    print("\n Generating base dataset: Set 4 (LHS/Random) ")
     init_conditions_set4 = SM_model.create_init_conditions_set4(total_samples=1000)
     solution_set4 = SM_model.solve_sm_model(init_conditions_set4, modelling_full, flag_time=True)
 
-    # --- Compute residuals for base dataset ---
-    print("\n--- Computing residuals for Set 4 ---")
+    #  Compute residuals for base dataset 
+    print("\n Computing residuals for Set 4 ")
     residuals_set4 = [
         compute_ode_residual(sol, modelling_full.odequations)
         for sol in solution_set4
@@ -122,7 +122,7 @@ def main(config):
         params = scenario["params"]
         desc = scenario["desc"]
 
-        print(f"\n--- Generating {name} ---")
+        print(f"\n Generating {name} ")
         print(f"Description: {desc}")
         print(f"Parameters: {params}")
 
@@ -158,11 +158,11 @@ def main(config):
 
     # STEP 4 — Summary report
     print("\nDataset generation complete. Summary:")
-    print("----------------------------------------------------")
+    print("-")
     for r in results_summary:
         print(f"{r['name']:>15} | N={r['samples']:>5} | mean={r['mean_residual']:.2e} | "
               f"max={r['max_residual']:.2e} | {r['desc']}")
-    print("----------------------------------------------------")
+    print("-")
 
     return None
 

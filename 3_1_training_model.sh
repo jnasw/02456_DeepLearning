@@ -26,7 +26,7 @@ DATASET="set5_mixed"
 
 nvidia-smi
 
-python train_ac_lbfgs.py \
+python 3_1_training_model.py \
     --dataset ${DATASET} \
     --num_epochs 2000 \
     --lr 1e-3 \

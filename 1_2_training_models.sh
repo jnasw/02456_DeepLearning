@@ -23,8 +23,8 @@ DATASETS=(set3_grid set5_exploit set5_explore set5_mixed set5_wide set5_mutated 
 
 nvidia-smi
 for DATASET in "${DATASETS[@]}"; do
-  echo "==== Training on ${DATASET} ===="
-  python 1_2_training_models.py \
+  echo "Training on ${DATASET}"
+  python 1_3_training_models.py \
     --dataset "${DATASET}" \
     --epochs 1000 \
     --optimizer LBFGS \
