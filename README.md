@@ -70,7 +70,7 @@ PowerPINN paper and the project report included in this repository.
 Clone the repository and install the required Python packages:
 
 ```bash
-git clone https://github.com/<your-username>/02456_DeepLearning.git
+git clone https://github.com/jnasw/02456_DeepLearning.git
 cd 02456_DeepLearning
 pip install -r requirements.txt
 ```
